@@ -1,0 +1,2 @@
+This file counts the number of times the button is pushed on PORTD and
+displays it on the LED array connected to PORTB as a BCD value
