@@ -5,7 +5,7 @@
  *      Author: Nick Pederson
  *         MCU:	ATMEGA128
  *     Purpose: This code reads the pushbutton board and displays the running sum on the 7 segment board
- *     			The buttons are read as B0 = 1, B1 = 2, B2 = 4, ..., B7 = 128
+ *     		The buttons are read as B0 = 1, B1 = 2, B2 = 4, ..., B7 = 128
  */
 #include<avr/io.h>
 #ifndef F_CPU
@@ -13,12 +13,12 @@
 #endif
 #include<util/delay.h>
 
-#define LED_ON 1 // loops this many time through 7 seg
-#define DEBOUNCE_TIME 6 // Number of button reads until it acknowledge button press
+#define LED_ON 1 		// loops this many time through 7 seg
+#define DEBOUNCE_TIME 6 	// Number of button reads until it acknowledge button press
 
-static uint16_t LED_num = 0; // Current sum
-static uint8_t lastButton = 0, // The buttons press from the last check
-			   debounceCnt = 0; // Current count of button checks without changing lastButton
+static uint16_t LED_num = 0; 	// Current sum
+static uint8_t lastButton = 0, 	// The buttons press from the last check
+	       debounceCnt = 0; // Current count of button checks without changing lastButton
 
 /* Input:
  * output: The debounced value of the push buttons
@@ -33,13 +33,15 @@ uint8_t readButtons(){
 	result = PINA ^ 0xFF;
 	_delay_us(2); // Delay for reading PIN
 
+	//***************************
+	// Debouncing
+	// **************************
 	//if button change, reset lastButton and debounceCnt
 	if(result != lastButton){
 		lastButton = result;
 		debounceCnt = 0;
 		return 0x00;
 	}
-	//if(result == 0x00) return 0x00; // returns no pushed buttons
 	if(result == lastButton && debounceCnt <= DEBOUNCE_TIME) debounceCnt++; //if the result equals the previous pushed button it iterates the debounceCnt without risk of rolling over
 	return (debounceCnt == DEBOUNCE_TIME) ? result : 0x00; // returns result if debounce is true otherwise returns no pushed Buttons
 }
@@ -71,30 +73,30 @@ uint8_t dec2bin(uint8_t dec){
 void write7seg(){
 	DDRA = 0xFF; //Sets port A to output
 	uint8_t dig1,
-		    dig2,
-			dig3,
-			dig4;
+	        dig2,
+		dig3,
+		dig4;
 
-	dig1 = dec2bin(LED_num % 10    );		// Calculates the 7seg number for the first digit
+	dig1 = dec2bin(LED_num % 10    );	// Calculates the 7seg number for the first digit
 	dig2 = dec2bin(LED_num % 100   / 10);	// Calculates the 7seg number for the second digit
 	dig3 = dec2bin(LED_num % 1000  / 100);	// Calculates the 7seg number for the third digit
 	dig4 = dec2bin(LED_num % 10000 / 1000);	// Calculates the 7seg number for the fourth digit
 
 	for(uint8_t i = 0; i < LED_ON; i++){
 		PORTB = 0x00; 			// Enables the first digit
-		PORTA = dig1 ^ 0xFF; 	// writes the first digit
+		PORTA = dig1 ^ 0xFF; 		// writes the first digit
 		_delay_ms(2);			// Deghosting delay
 
 		PORTB = 0x10;			// Enables the second digit
-		PORTA = dig2 ^ 0xFF;	// writes the second digit
+		PORTA = dig2 ^ 0xFF;		// writes the second digit
 		_delay_ms(2);			// Deghosting delay
 
 		PORTB = 0x30;			// Enables the third digit
-		PORTA = dig3 ^ 0xFF;	// writes the third digit
+		PORTA = dig3 ^ 0xFF;		// writes the third digit
 		_delay_ms(2);			// Deghosting delay
 
 		PORTB = 0x40;			// Enables the fourth digit
-		PORTA = dig4 ^ 0xFF;	// writes the fourth digit
+		PORTA = dig4 ^ 0xFF;		// writes the fourth digit
 		_delay_ms(2);			// Deghosting delay
 	}
 }
