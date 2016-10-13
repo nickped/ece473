@@ -104,6 +104,6 @@ int main(){
 	LED_num = 0; // Sets current number displayed as 0
 	while(1){
 		write7seg(); // Writes current number to 7seg
-		LED_num += readButtons(); //Read and add pushbuttons to current number
+		LED_num = (LED_num + readButtons()) % 1023; //Read and add pushbuttons to current number
 	}
 }
