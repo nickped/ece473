@@ -18,9 +18,12 @@
 
 static uint16_t LED_num = 0; 	// Current sum
 static uint8_t lastButton = 0, 	// The buttons press from the last check
-	       debounceCnt = 0; // Current count of button checks without changing lastButton
+	       debounceCnt = 0, // Current count of button checks without changing lastButton
+	       currentMode = 0x00; // Displays current mode
 
-ISR(TIMER0
+ISR(TIMER0_OVF_vect){ //Overflow timer0 ISR
+   currentMode ^= readButtons();
+}
 
 void spi_init(){
    DDRB |= 0x07;
@@ -120,6 +123,10 @@ void write7seg(){
 int main(){
 	DDRB = 0xF0; // Sets upper 4 bits of port B to output for decoder
 	LED_num = 0; // Sets current number displayed as 0
+
+	spi_init();
+	timer_init();
+
 	while(1){
 		write7seg(); // Writes current number to 7seg
 		LED_num = (LED_num + readButtons()) % 1023; //Read and add pushbuttons to current number
