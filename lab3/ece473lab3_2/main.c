@@ -1,16 +1,21 @@
 #include<avr/io.h>
 #include<avr/interrupt.h>
-//#ifndef F_CPU
+#ifndef F_CPU
 #define F_CPU 16000000UL
-//#endif
+#endif
 #include<util/delay.h>
 
 #define DEBOUNCE_CNT 6
+
 static volatile uint8_t mode = 0x01,
 			lastButton = 0x00,
 			debounceButtonCnt = 0,
-			val7Seg = 0x00;
-
+			val7Seg = 0x00,
+			lastEncoderState = 0,
+			encoderDir = 0;
+enum direction{	noDir = 0,
+   		fwd   = 1,
+		bck   = 2 };
 ISR(TIMER0_OVF_vect){
    //TODO: write ISR to check buttons
    //	   Triggered with timer0
@@ -127,6 +132,34 @@ void write7Seg(){
 
 	PORTA = 0xFF;
 }
+
+void readEncoders(){
+   uint8_t currentEncoderState = readSPI();
+
+   if(currentEncoderState == lastEncoderState) return;
+
+   if(currentEncoderState & 0x0C != lastEncoderState & 0x0C){ //checks to see if encoder 2 changed
+     if(direction & 0x0C == noDir<<2){//checks to see if encoder 
+	if((currentEncoderState & 0x0C == fwd<<2) && (direction & 0x0C == noDir<<2)){
+	   direction &= 0xF3;
+	   direction |= fwd;
+	}
+	if(currentEncoderState 
+	
+   }
+   
+   if(currentEncoderState & 0x03 !=  lastEncoderState & 0x03){ //checks to see if encoder 1 changed
+   }
+
+   /*
+   if(currentEncoderState & 0x80 | currentEncoderState & 0x40){ //Checks to see if encoder 2 changed
+	 if(encoderDir == (fwd<<enc2)
+*/
+
+
+   lastEncoderState = currentEncoderState;
+}
+
 
 int main(){
    DDRA = 0xFF;
