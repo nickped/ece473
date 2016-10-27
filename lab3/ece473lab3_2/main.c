@@ -135,21 +135,31 @@ void write7Seg(){
 	dig3 = dec2seg(val7Seg % 1000  / 100);	// Calculates the 7seg number for the third digit
 	dig4 = dec2seg(val7Seg % 10000 / 1000);	// Calculates the 7seg number for the fourth digit
 
+	
 	PORTB = 0x00; 			// Enables the first digit
 	PORTA = dig1 ^ 0xFF; 		// writes the first digit
 	_delay_us(10);			// Deghosting delay
 
-	PORTB = 0x10;			// Enables the second digit
-	PORTA = dig2 ^ 0xFF;		// writes the second digit
-	_delay_us(10);			// Deghosting delay
+	if((dig2 == dec2seg(0)) && (dig3 == dec2seg(0)) && (dig4 == dec2seg(0)));
+	else{
+	   PORTB = 0x10;			// Enables the second digit
+	   PORTA = dig2 ^ 0xFF;		// writes the second digit
+	   _delay_us(10);			// Deghosting delay
+	}
 
-	PORTB = 0x30;			// Enables the third digit
-	PORTA = dig3 ^ 0xFF;		// writes the third digit
-	_delay_us(10);			// Deghosting delay
+	if((dig3 == dec2seg(0)) && (dig4 == dec2seg(0)));
+	else{
+	   PORTB = 0x30;			// Enables the third digit
+	   PORTA = dig3 ^ 0xFF;		// writes the third digit
+	   _delay_us(10);			// Deghosting delay
+	}
 
-	PORTB = 0x40;			// Enables the fourth digit
-	PORTA = dig4 ^ 0xFF;		// writes the fourth digit
-	_delay_us(10);			// Deghosting delay
+	if((dig4 == dec2seg(0)));
+	else{
+	   PORTB = 0x40;			// Enables the fourth digit
+	   PORTA = dig4 ^ 0xFF;		// writes the fourth digit
+	   _delay_us(10);			// Deghosting delay
+	}
 
 	PORTA = 0xFF;
 }
