@@ -1,3 +1,11 @@
+/*
+ * main.c
+ *
+ *  Created on: Oct 26, 2016
+ *      Author: Nick Pederson
+ *         MCU:	ATMEGA128
+ *     Purpose: This code reads the mode from the push buttons and displays them using the bar graph. When the encoders are turned it adds or subtracts the number displayed on the 7 segment; the minimum and maximum value of this number is 0 and 1023. If more then one mode is selected it will not change the value on the 7 segment.
+ */
 #include<avr/io.h>
 #include<avr/interrupt.h>
 #ifndef F_CPU
@@ -5,41 +13,42 @@
 #endif
 #include<util/delay.h>
 
-#define DEBOUNCE_CNT 6
+static volatile uint8_t mode = 0x01,		//The current mode
+			lastButton = 0x00,	//last pushbutton state
+			debounceButtonCnt = 0,	//current number of debounces
+			encoder1State = 0x00,	//encoder1 debounce state
+			encoder2State = 0x00;	//encoder2 debounce state
 
-static volatile uint8_t mode = 0x01,
-			lastButton = 0x00,
-			debounceButtonCnt = 0,
-			val7Seg = 0x00,
-			lastEncoderState = 0,
-			encoderDir = 0;
-enum direction{	noDir = 0,
-   		fwd   = 1,
-		bck   = 2 };
+static int16_t 		val7Seg = 0x0000;	//value displayed on 7 seg
+
+/* Reads push button on timer 1 overflow*/
 ISR(TIMER0_OVF_vect){
-   //TODO: write ISR to check buttons
-   //	   Triggered with timer0
-
    uint8_t buttons;
 
-   DDRA = 0x00;
-   PORTB = 0x70;
-   PORTA = 0xFF;
+   DDRA = 0x00;  //Sets portA for input
+   PORTB = 0x70; //Enable the pushbuttons
+   PORTA = 0xFF; //Sets the pull up resistor for pushbuttons
 
-   buttons = PINA ^ 0xFF;
-   //mode = buttons;
+   buttons = PINA ^ 0xFF; //Reads push buttons
 
+   //Resets debounce if pushbuttons doesn't equel lastButton
    if (buttons != lastButton){
       lastButton = buttons;
       debounceButtonCnt = 0;
    }
+   // Iterates debounce count without rolling over
    else if(debounceButtonCnt <= 6)
       debounceButtonCnt++;
 
-   if(debounceButtonCnt == 6) mode ^= buttons;
-   DDRA = 0xFF;
+   //Changes mode if debounce is met
+   if(debounceButtonCnt == 6) mode ^= buttons; 
+   DDRA = 0xFF; //resets portA to output
 }
 
+/* Input:
+ * Output:
+ * Purpose: Initialize timer/counters
+ */
 void timerInit(){
    //**************************
    //initalizing timer0
@@ -48,6 +57,10 @@ void timerInit(){
    TCCR0 |= (1<<CS02) | (1<<CS00); //normal mode, clk/128
 }
 
+/* Input:
+ * Output:
+ * Purpose: Initialize SPI
+ */
 void spiInit(){
   DDRB |= 0x07; //Turn on SS, MOSI, SCLK
   DDRD |= 0x04; //Sets enable pin for bargraph
@@ -56,6 +69,10 @@ void spiInit(){
   SPSR |= (1<<SPI2X); // double speed operation
 }//spi_init
 
+/* Input:
+ * Output:
+ * Purpose: Writes the mode to the barGraph
+ */
 void write2Bar(){
    SPDR = mode; //Initiates spi transfer
    while(bit_is_clear(SPSR, SPIF)); //waits till done (8 cycles)
@@ -65,6 +82,10 @@ void write2Bar(){
    PORTD &= ~0x04;
 }
 
+/* Input:
+ * Output: current encoder state
+ * Purpose: Reads the encoders
+ */
 uint8_t readSPI(){
    //Save encoder states into shift reg
    PORTB = 0x00;
@@ -133,46 +154,73 @@ void write7Seg(){
 	PORTA = 0xFF;
 }
 
-void readEncoders(){
-   uint8_t currentEncoderState = readSPI();
-
-   if(currentEncoderState == lastEncoderState) return;
-
-   if(currentEncoderState & 0x0C != lastEncoderState & 0x0C){ //checks to see if encoder 2 changed
-     if(direction & 0x0C == noDir<<2){//checks to see if encoder 
-	if((currentEncoderState & 0x0C == fwd<<2) && (direction & 0x0C == noDir<<2)){
-	   direction &= 0xF3;
-	   direction |= fwd;
-	}
-	if(currentEncoderState 
-	
+/* Input:
+ * Output: 1 if mode is valid and 0 otherwise
+ * Purpose: Checks to see if mode is valid
+ */
+uint8_t validMode(){
+   switch(mode){
+      case 0x00: return 1;
+      case 0x01: return 1;
+      case 0x02: return 1;
+      case 0x04: return 1;
+      case 0x08: return 1;
+      case 0x10: return 1;
+      case 0x20: return 1;
+      case 0x40: return 1;
+      case 0x80: return 1;
+      default:   return 0;
    }
-   
-   if(currentEncoderState & 0x03 !=  lastEncoderState & 0x03){ //checks to see if encoder 1 changed
-   }
-
-   /*
-   if(currentEncoderState & 0x80 | currentEncoderState & 0x40){ //Checks to see if encoder 2 changed
-	 if(encoderDir == (fwd<<enc2)
-*/
-
-
-   lastEncoderState = currentEncoderState;
 }
 
+/* Input:
+ * Output:
+ * Purpose: Reads, debounces, and adds encoder ticks to val7Seg
+ */
+void readEncoders(){
+   uint8_t currentEncoderState = readSPI(); //Gets current state of encoders
+
+   //Shifts in encoder1 val to encoder1State
+   if(~(encoder1State == 0xFF) || ~(currentEncoderState & 0x08))
+      encoder1State = (encoder1State<<1) | ((currentEncoderState & 0x08) ? 1 : 0);
+
+   //Shifts in encoder2 val to encoder2State
+   if(~(encoder2State == 0xFF) || ~(currentEncoderState & 0x02))
+      encoder2State = (encoder2State<<1) | ((currentEncoderState & 0x02) ? 1 : 0);
+
+   //Checks to see if mode is valid
+   if(validMode() == 0) return; 
+
+   //If encoder1 is debounced (debounces 6 times)
+   //and has a falling edge then either add or subtract mode
+   //from val7Seg depending on direction of encoder
+   if((encoder1State & 0x3F) == 0x3E){
+      if(currentEncoderState & 0x04) val7Seg += mode;
+      else val7Seg -= mode;
+   }
+   //If encoder2 is debounced (debounces 6 times)
+   //and has a falling edge then either add or subtract mode
+   //from val7Seg depending on direction of encoder
+   if((encoder2State & 0x3F) == 0x3E){
+      if(currentEncoderState & 0x01) val7Seg += mode;
+      else val7Seg -= mode;
+   }
+}
 
 int main(){
-   DDRA = 0xFF;
-   DDRB = 0xFF;
+   DDRA = 0xFF; //Sets portA to output
+   DDRB = 0xFF; //Sets portB to output
 
-   spiInit();
-   write2Bar();
-   timerInit();
+   spiInit();	//Initialize SPI
+   timerInit(); //Initialize timers
 
-   sei();
+   sei();	//Enable interrupts
 
    while(1){
-      write2Bar();
-      write7Seg();
+      write2Bar();	//Write mode to barGraph
+      write7Seg();	//Write val7Seg to 7 segment
+      readEncoders();	//Reads encoders
+      if(val7Seg < 0) val7Seg += 1024;	     //Rolls number into valid range
+      if(val7Seg > 1023) val7Seg -= val7Seg; //Rolls number into valid range
    }
 }
