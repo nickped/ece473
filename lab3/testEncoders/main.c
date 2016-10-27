@@ -16,7 +16,7 @@ void spi_init(void){
 
 void readSPI(){
    PORTB = 0x00;
-   _delay_ms(2);
+   //_delay_ms(2);
    PORTB = 0x01;
 
    PORTE = 0x00;
