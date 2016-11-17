@@ -28,7 +28,7 @@
 #define HR_DOWN 0x04
 #define CLOCK_TIME 0x00
 #define CLOCK_ALARM 0x01
-#define START_VOL 0x0100
+#define START_VOL 0x01F0
 
 #define alarmOn 0x01
 #define alarmBuzz 0x02
@@ -116,6 +116,7 @@ ISR(TIMER2_COMP_vect){
 
 //plays tone
 ISR(TIMER1_COMPA_vect){
+   if((timeSeconds >= alarmSeconds) && (timeMinutes >= alarmMinutes) && (timeHours >= alarmHours))
    PORTC ^= 0x01;
 }
 
@@ -198,6 +199,7 @@ void alarmSet(){
    else{
       alarmMode &= ~alarmOn;
       sprintf((char*)lcdString, "%s Off", alarmString);
+      soundOff();
    }
    lcdStringSize = strlen((char*)lcdString); //gets size of new string
    alarmMode |= alarmChange; // sets alarmChange flag
@@ -441,20 +443,30 @@ int main(int argc, char **argv){
       (mode & alarm) ? write7Seg(alarmHours, alarmMinutes, alarmSeconds) : write7Seg(timeHours, timeMinutes, timeSeconds);	//Write val7Seg to 7 segment
       mode ^= readButton(); //get changes to mode
       switch(mode & 0xF0){
-      	  case alarm: //change alarm mode
-		     changeTime(mode, CLOCK_ALARM);
+      	  case alarm: //change alarm mode // also sleep button
+	       	     changeTime(mode, CLOCK_ALARM);
 		     break;
-	     case alarmArm: //alarm arm/disarm mode
+	  case alarmArm: //alarm arm/disarm mode
 		     alarmSet();
 		     mode &= ~alarmArm;
 		     break;
-	     case setClock: //set time mode
+	  case setClock: //set time mode
       		  changeTime(mode, CLOCK_TIME);
       		  break;
 	  case normal: // normal mode (nothing on)
-		  if((alarmMode & alarmOn) && (alarmMode & alarmSounding))
+		  if((alarmMode & alarmOn) && (alarmMode & alarmSounding)){
 		     //if(alarmMode & alarmBuzz)
-			buzzer();
+	/*	     if((timeSeconds >= alarmSeconds) | (timeMinutes >= alarmMinutes) | (timeHours >= alarmHours))
+		        soundOn();
+		     else
+			soundOff();
+		     buzzer();*/
+
+		     if(mode & 0x01){
+			alarmSeconds = timeSeconds + 10;
+		     }
+		     PORTB |= 0x01;
+		  }
 
 		  break;
       };
