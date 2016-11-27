@@ -33,7 +33,7 @@ int main(){
 	 twi_start_rd(SENSOR_ADDR, readTwiBuffer, 2);
 	 readTwiBuffer[0] = (readTwiBuffer[0]<<1) | ((readTwiBuffer[1]&0x80) ? 1 : 0);
 
-	 sprintf(strBuffer, "%d.%d", readTwiBuffer[0], ((readTwiBuffer[1] & 0x40) ? 50 : 0) + ((readTwiBuffer[1] & 0x20) ? 25 : 0)) ;
+	 sprintf(strBuffer, "%d.%02d", readTwiBuffer[0], ((readTwiBuffer[1] & 0x40) ? 50 : 0) + ((readTwiBuffer[1] & 0x20) ? 25 : 0)) ;
 	 uart_puts(strBuffer);
 
 	 PORTD &= ~0x10;
