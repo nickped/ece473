@@ -79,7 +79,7 @@ ISR(TIMER0_COMP_vect){
    iterateTime(0, 0, 1); //iterates time
    checkAlarm(); //checks to see if time = alarm
   // uart_putc(0x00);
-  // lcdMode |= tempCheck;
+   lcdMode |= tempCheck;
    setLcdString();
 }
 
@@ -473,24 +473,28 @@ int main(int argc, char **argv){
    sei();	//Enable interrupts
 
    while(1){
+      if(lcdMode&tempCheck){
+	 lcdMode &= ~tempCheck;
+	 UDR0 = 0x00; //poke 48 board
+	 while(!(UCSR0A & (1<<RXC0)));
+	 uartIn[0] = UDR0; //reads first byte from 48
+	 while(!(UCSR0A & (1<<RXC0)));
+	 uartIn[1] = UDR0; // reading last byte from 48 board
+	 sprintf((char*)lcdTemp[1], "%d.%d", uartIn[0], uartIn[1]); //creating the temperature string
+      }
+      
       //reading local temp
       twi_start_rd(sensor, twiIn, 2);
       sprintf((char*)lcdTemp[0], " %d.%d", (twiIn[0]<<1) | ((twiIn[1]&0x80)?1:0), ((twiIn[1]&0x40)?5:0) + ((twiIn[1]&0x20)?2:0));
 
-      //reading remote temp
-      //uart_putc(0x00); //poke 48 board
-      UDR0 = 0x00;
-      //while(!(UCSR0A & (1<<RXC0)));
-      _delay_ms(10);
-      uartIn[0] = UDR0;
-      //while(!(UCSR0A & (1<<RXC0)));
-      _delay_ms(10);
-      uartIn[1] = UDR0;
-      sprintf((char*)lcdTemp[1], "%d.%d", uartIn[0], uartIn[1]); 
 
       mode &= 0xF0; //clears the clock set push button states
       (mode & alarm) ? write7Seg(alarmHours, alarmMinutes, alarmSeconds) : write7Seg(timeHours, timeMinutes, timeSeconds);	//Write val7Seg to 7 segment
       mode ^= readButton(); //get changes to mode
+
+
+      //while(!(UCSR0A & (1<<RXC0)));
+      //uartIn[0] = UDR0; //reads first byte from 48
       switch(mode & 0xF0){
       	  case alarm: //change alarm mode // also sleep button
 	       	     changeTime(mode, CLOCK_ALARM);
@@ -519,5 +523,8 @@ int main(int argc, char **argv){
 
 		  break;
       };
+      //while(!(UCSR0A & (1<<RXC0)));
+      //uartIn[1] = UDR0; // reading last byte from 48 board
+      //sprintf((char*)lcdTemp[1], "%d.%d", uartIn[0], uartIn[1]); //creating the temperature string
    }
 }
