@@ -1,0 +1,614 @@
+/*
+ * main.c
+ *
+ *  Created on: Nov 27, 2016
+ *      Author: Nick Pederson
+ *         MCU:	ATMEGA128
+ *     Purpose: This code is designed to be used as an alarm clock.
+ */
+
+#include<avr/io.h>
+#include<avr/interrupt.h>
+#ifndef F_CPU
+#define F_CPU 16000000UL
+#endif
+#include<util/delay.h>
+#include<stdio.h>
+#include<string.h>
+#include"main.h"
+#include"hd44780.h"
+#include"sound.h"
+#include"uart_functions.h"
+#include"twi_master.h"
+#include"radio.h"
+#include"si4734.h"
+
+
+//#define QUICK_TIME
+#define LCD_BUFFER 16
+#define MIN_UP 0x02
+#define MIN_DOWN 0x01
+#define HR_UP 0x08
+#define HR_DOWN 0x04
+#define CLOCK_TIME 0x00
+#define CLOCK_ALARM 0x01
+#define START_VOL 0x01F0
+
+#define alarmOn 0x01
+#define alarmBuzz 0x02
+#define lcdChange 0x80
+#define alarmSounding 0x40
+#define tempCheck 0x01
+
+#define sensor 0x90
+
+extern uint16_t current_fm_freq;
+extern volatile uint8_t radioMode;
+
+volatile char lcdString[2][LCD_BUFFER],      	//string to write to the lcd
+	      alarmString[] = "",		//Constant string for the lcd
+	      lcdAlarmMode[LCD_BUFFER] = "Off",
+	      lcdTemp[2][LCD_BUFFER],
+
+	      freq[LCD_BUFFER] = "0",
+	      radioType[] = "FM",
+	      radioSignal[3] = "0";
+
+
+static volatile uint8_t mode = 0x00,		//The current mode
+			lcdMode = 0x00,
+			lastButton = 0x00,	//last pushbutton state
+			debounceButtonCnt = 0,	//current number of debounces
+			lcdIterator = 0x00,    	//iterator for the lcd string
+			lcdStringSize[2],	//the size of the string for the lcd
+			encoder1State = 0x00,	//encoder1 debounce state
+			encoder2State = 0x00,	//encoder2 debounce state
+
+			alarmMode = 0x00,	//The alarm mode
+			
+			//Clock time
+			timeSeconds = 0x00,
+			timeMinutes = 0x00,
+			timeHours   = 0x00,
+
+			//Alarm time
+			alarmSeconds = 0x00,
+			alarmMinutes = 0x00,
+			alarmHours   = 0x00,
+			radioAlarm   = 0x00;
+
+//Different user modes
+enum modeTypes{
+   normal = 0x00,
+   alarm = 0x10,
+   setClock = 0x20,
+   alarmArm = 0x40
+};
+
+//Keeps track of time
+ISR(TIMER0_COMP_vect){
+   iterateTime(0, 0, 1); //iterates time
+   checkAlarm(); //checks to see if time = alarm
+  // uart_putc(0x00);
+   lcdMode |= tempCheck;
+   setLcdString();
+}
+
+//write to bar
+//write to lcd
+//reads adc and sets ocr2
+ISR(TIMER2_COMP_vect){
+   ADCSRA |= (1<<ADSC); //poke ADSC and start conversion
+   SPDR = mode; //send mode to bar graph
+
+   while(bit_is_clear(SPSR, SPIF)); //waits till spi is done
+   PORTD |= 0x04; //updates bar graph
+   PORTD &= ~0x04;   
+
+   readEncoders();
+
+   //Writes the lcd string to the lcd
+   //1 char per interrupt
+   //only writes string when the alarmChange is set
+   //after done writting string clears alarmChange
+   if(alarmMode & lcdChange){ // resets iterator and clears flag
+      if(lcdIterator == lcdStringSize[0] + lcdStringSize[1]){ 
+	 lcdIterator = 0;
+	 alarmMode &= ~lcdChange;
+      }
+      else if(lcdIterator == 0){ // clears display and loads first char
+	 clear_display();
+	 char2lcd(lcdString[0][lcdIterator]);
+	 lcdIterator++;
+      }
+      else if(lcdIterator < lcdStringSize[0]){ // loads first row
+	 char2lcd(lcdString[0][lcdIterator]); 
+	 lcdIterator++; 
+      }
+      else if(lcdIterator == lcdStringSize[0]){ // switches rows and loads first char
+	 line2_col1();
+	 char2lcd(lcdString[1][lcdIterator - lcdStringSize[0]]);
+	 lcdIterator++;
+      }
+      else{ // loads second row
+	 char2lcd(lcdString[1][lcdIterator - lcdStringSize[0]]);
+	 lcdIterator++;
+      }
+
+   }
+
+   while(!bit_is_clear(ADCSRA, ADSC)); //spin while running flag is set
+
+   OCR2 = adcOffset(ADCH); //adjust the brightness
+}
+
+//plays tone
+ISR(TIMER1_COMPA_vect){
+  // if((timeSeconds >= alarmSeconds) && (timeMinutes >= alarmMinutes) && (timeHours >= alarmHours))
+   PORTC ^= 0x01;
+}
+
+/* Input:
+ * Output:
+ * Purpose: Initialize timer/counters
+ */
+void timerInit(){
+   adcInit();
+
+  //**************************
+  //initalizing timer0
+  //**************************
+  ASSR  |= (1<<AS0); //use external 32kHz crystal
+  TIMSK |= (1<<OCIE0); //enable interrupts
+  TCNT0  = 0; //sets the initial time at 0
+  TCCR0 |= (1<<WGM01) |(1<<CS02) | (1<<CS00); //ctc mode, 128 prescaler,
+  OCR0 = 250;
+
+  //**************************
+  //initalizing timer1
+  //**************************
+  TCCR1B |= (1 << WGM12); //ctc mode
+  TIMSK |= (1 << OCIE1A); //enable interrupt
+
+  //**************************
+  //initalizing timer2
+  //**************************
+  TCNT2 = 0;
+  TIMSK |= (1<<OCIE2); //enable interrupt
+  TCCR2 |= (1 << WGM21) | (1 << WGM20) | (1 << COM21) | (0 << COM20) | (1 << CS22); //fast pwm, set on comare, 256 prescaler
+  OCR2 = 0x20; // gets reset after first timer2 interrupt 
+
+  //**************************
+  //initalizing timer3
+  //**************************
+  //fast pwm mode, toggle oc1a, no prescaler
+  TCCR3A = (1 << WGM31) | (1 << WGM30) | (1 << COM3A1);
+  TCCR3B = (1 << WGM32) | (1 << CS30);
+  OCR3A = START_VOL;
+}
+
+/* Input:   The high value read in from the adc
+ * Output:  the offset for the ocr
+ * Purpose: Used to get the ocr value for the ambient light
+ */
+uint8_t adcOffset(uint8_t adcVal){
+   if(adcVal > 0xF0) return 0xF0;
+   if(adcVal > 0xE0) return 0xE0;
+   if(adcVal > 0xD0) return 0xD0;
+   if(adcVal > 0xC0) return 0xC0;
+   return adcVal;
+}
+   
+/* Input:   
+ * Output:  
+ * Purpose: Checks to see if alarm matches time. If so turns on timer 1
+ */
+void checkAlarm(){
+   if(!(alarmMode & alarmOn)) return; //checks to see that alarm is turned on
+   if((timeSeconds != alarmSeconds) | 
+      (timeMinutes != alarmMinutes) |
+      (timeHours   != alarmHours))
+      return;
+   if(lcdAlarmMode[0] == 'R') {
+/*      _delay_ms(500);
+      radioOn();
+      _delay_ms(500);*/
+      radioAlarm = 0x01;
+   }
+   else {
+      radioOff();
+      TCCR1B |= (1 << CS10); // no prescaler
+   }
+}
+
+/* Input:   
+ * Output:  
+ * Purpose: Toggles alarm and sets the alarmChange flag
+ */
+void alarmSet(){
+   if(lcdAlarmMode[0] == 'O'){
+      sprintf((char*)lcdAlarmMode, "Buzz");
+      alarmMode |= alarmOn;
+   }
+   else if(lcdAlarmMode[0] == 'B'){
+      sprintf((char*)lcdAlarmMode, "Radio");
+      alarmMode |= alarmOn;
+   }
+   else{
+      sprintf((char*)lcdAlarmMode, "Off");
+      alarmMode &= ~alarmOn;
+   }
+   //if alarm is off turn it on
+/*   if(!(alarmMode & alarmOn)){
+      alarmMode |= alarmOn;
+      if(lcdAlarmMode[0] == "B") sprintf((char*)lcdAlarmMode, "Radio");
+      else sprintf((char*)lcdAlarmMode, "Buzz");
+   }
+   //if alarm is on turn it off
+   else{
+      alarmMode &= ~alarmOn;
+      sprintf((char*)lcdAlarmMode, "Off");
+      soundOff();
+   }*/
+   setLcdString();
+}
+
+void setLcdString(){
+//  if(lcdMode &= tempCheck){
+//     uart_gets(
+  sprintf((char*)lcdString[0], "%s%s %d.%d%s :)", alarmString, lcdAlarmMode, current_fm_freq/100, (current_fm_freq/10)%10, radioType);
+  sprintf((char*)lcdString[1], "%sC %sC %s%%", (char*)lcdTemp[0], (char*)lcdTemp[1], radioSignal );
+  lcdStringSize[0] = strlen((char*)lcdString[0]);
+  lcdStringSize[1] = strlen((char*)lcdString[1]);
+  lcdIterator = 0;
+  alarmMode |= lcdChange;
+}
+
+/* Input:   hours added
+ * 	    minutes added
+ * 	    seconds added
+ * Output:  
+ * Purpose: adds to time
+ */
+void iterateTime(int8_t hr, int8_t min, int8_t sec){
+   timeSeconds += sec;
+   timeMinutes += min;
+   timeHours   += hr;
+
+   //roll over handling
+   if(timeSeconds >= 60){timeMinutes++; timeSeconds = 0;}
+   if(timeMinutes >= 60){timeHours++;   timeMinutes = 0;}
+   if(timeHours   >= 24){		timeHours   = 0;}
+
+   //roll under hangling
+   if(timeSeconds < 0){timeMinutes--; timeSeconds = 59;}
+   if(timeMinutes < 0){timeHours--;   timeMinutes = 59;}
+   if(timeHours   < 0){		      timeHours   = 23;}
+}
+
+/* Input:   hours added
+ * 	    minutes added
+ * 	    seconds added
+ * Output:  
+ * Purpose: adds to alarm
+ */
+void iterateAlarm(int8_t hr, int8_t min, int8_t sec){
+   alarmSeconds += sec;
+   alarmMinutes += min;
+   alarmHours   += hr;
+
+   //roll over handling
+   if(alarmSeconds >= 60){alarmMinutes++; alarmSeconds = 0;}
+   if(alarmMinutes >= 60){alarmHours++;   alarmMinutes = 0;}
+   if(alarmHours   >= 24){		  alarmHours   = 0;}
+
+   //roll under handling
+   if(alarmSeconds < 0){alarmMinutes--;   alarmSeconds = 59;}
+   if(alarmMinutes < 0){alarmHours--;     alarmMinutes = 59;}
+   if(alarmHours   < 0){		  alarmHours   = 23;}
+}
+
+/* Input:   
+ * Output:  
+ * Purpose: initializes adc
+ */
+void adcInit(){
+   DDRF  &= ~(_BV(DDF7)); //make port F bit 7 is ADC input  
+   PORTF &= ~(_BV(PF7));  //port F bit 7 pullups must be off
+
+   ADMUX = (1<<REFS0) | (1 << ADLAR) | (1<<MUX0) | (1<<MUX1) | (1<<MUX2); //single-ended, input PORTF bit 7, left adjusted, 10 bits
+
+   ADCSRA = (1<<ADEN) | (1<<ADPS2) | (1<<ADPS1) | (1<<ADPS0); //ADC enabled, don't start yet, single shot mode 
+}
+
+/* Input:   
+ * Output:  push button change
+ * Purpose: gets and debounces push buttons
+ */
+int readButton(){
+   uint8_t buttons;
+
+   DDRA = 0x00;  //Sets portA for input
+   PORTB = 0x70 | (PINB & 0x80); //Enable the pushbuttons
+   PORTA = 0xFF; //Sets the pull up resistor for pushbuttons
+
+   buttons = PINA ^ 0xFF; //Reads push buttons
+
+   //Resets debounce if pushbuttons doesn't equel lastButton
+   if (buttons != lastButton){
+      lastButton = buttons;
+      debounceButtonCnt = 0;
+   }
+   // Iterates debounce count without rolling over
+   else if(debounceButtonCnt <= 12)
+      debounceButtonCnt++;
+
+   DDRA = 0xFF; //resets portA to output
+   //Changes mode if debounce is met
+   return (debounceButtonCnt == 12) ? buttons : 0;
+}
+
+/* Input:   the buttons state in lower nibble (upperDiv up, upperDiv down, lowerDiv up, lowerDiv down)
+ * 	    clock to change
+ * Output:  
+ * Purpose: Inteprets buttons for time/alarm change
+ */
+void changeTime(uint8_t buttons, uint8_t clock){
+#ifdef QUICK_TIME
+   	// change time clock
+	if(clock == CLOCK_TIME){
+		if(buttons & MIN_DOWN) iterateTime(0, 0, -1);
+		if(buttons & MIN_UP)   iterateTime(0, 0, 1);
+		if(buttons & HR_DOWN)  iterateTime(0, -1, 0);
+		if(buttons & HR_UP)    iterateTime(0, 1, 0);
+	}
+	// change alarm clock
+	else if(clock == CLOCK_ALARM){
+		if(buttons & MIN_DOWN) iterateAlarm(0, 0, -1);
+		if(buttons & MIN_UP)   iterateAlarm(0, 0, 1);
+		if(buttons & HR_DOWN)  iterateAlarm(0, -1, 0);
+		if(buttons & HR_UP)    iterateAlarm(0, 1, 0);
+	}
+#else
+	//change time clock
+	if(clock == CLOCK_TIME){
+		if(buttons & MIN_DOWN) iterateTime(0, -1, 0);
+		if(buttons & MIN_UP)   iterateTime(0, 1, 0);
+		if(buttons & HR_DOWN)  iterateTime(-1, 0, 0);
+		if(buttons & HR_UP)    iterateTime(1, 0, 0);
+	}
+	//change alarm clock
+	else if(clock == CLOCK_ALARM){
+		if(buttons & MIN_DOWN) iterateAlarm(0, -1, 0);
+		if(buttons & MIN_UP)   iterateAlarm(0, 1, 0);
+		if(buttons & HR_DOWN)  iterateAlarm(-1, 0, 0);
+		if(buttons & HR_UP)    iterateAlarm(1, 0, 0);
+	}
+#endif
+}
+
+/* Input:
+ * Output:
+ * Purpose: Initialize SPI
+ */
+void spiInit(){
+  DDRB |= 0x07; //Turn on SS, MOSI, SCLK
+  DDRD |= 0x04; //Sets enable pin for bargraph
+  SPCR |= (1<<SPE) | (1<<MSTR); //set up SPI mode
+  SPSR |= (1<<SPI2X); // double speed operation
+}//spi_init
+
+/* Input: decimal value to be converted. Must be a single digit
+ * Output: Returns the 7seg representation of the input
+ * Purpose: converts a decimal digit to 7seg display
+ */
+uint8_t dec2seg(uint8_t dec){
+	switch(dec){
+		case 0: return 0x3F;
+		case 1: return 0x06;
+		case 2: return 0x5B;
+		case 3: return 0x4F;
+		case 4: return 0x66;
+		case 5: return 0x6D;
+		case 6: return 0x7D;
+		case 7: return 0x07;
+		case 8: return 0x7F;
+		case 9: return 0x67;
+	}
+	return 0;
+}
+
+/* Input:
+ * Output:
+ * Purpose: Displays val7Seg to 7seg
+ */
+void write7Seg(uint8_t hr, uint8_t min, uint8_t sec){
+	//TODO: civilian/military time
+	DDRA = 0xFF; //Sets port A to output
+	PORTA = 0xFF;
+	uint8_t dig1,
+	        dig2,
+		dig3,
+		dig4;
+
+#ifdef QUICK_TIME
+	dig1 = dec2seg(sec % 10);	// Calculates the 7seg number for the first digit
+	dig2 = dec2seg(sec % 100   / 10);	// Calculates the 7seg number for the second digit
+	dig3 = dec2seg(min % 10);	// Calculates the 7seg number for the third digit
+	dig4 = dec2seg(min % 100 / 10);	// Calculates the 7seg number for the fourth digit
+#else
+	dig1 = dec2seg(min % 10);	// Calculates the 7seg number for the first digit
+	dig2 = dec2seg(min % 100   / 10);	// Calculates the 7seg number for the second digit
+	dig3 = dec2seg(hr % 10);	// Calculates the 7seg number for the third digit
+	dig4 = dec2seg(hr % 100 / 10);	// Calculates the 7seg number for the fourth digit
+#endif /* QUICK_TIME */
+
+
+
+	PORTB = 0x00 | (PINB & 0x80);	// Enables the first digit
+	PORTA = dig1 ^ 0xFF; 		// writes the first digit
+	_delay_us(5);			// Deghosting delay
+	PORTA = 0xFF;
+	nop2();
+
+	PORTB = 0x10 | (PINB & 0x80);	// Enables the second digit
+	PORTA = dig2 ^ 0xFF;		// writes the second digit
+	_delay_us(5);			// Deghosting delay
+	PORTA = 0xFF;
+	nop2();
+
+	if(timeSeconds & 0x01){
+	   PORTB = 0x20 | (PINB & 0x80);
+	   PORTA = 0x03 ^ 0xFF;
+	   _delay_us(5);
+	   PORTA = 0xFF;
+	   nop2();
+	   nop2();
+	}
+
+	PORTB = 0x30 | (PINB & 0x80);	// Enables the third digit
+	PORTA = dig3 ^ 0xFF;		// writes the third digit
+	_delay_us(5);			// Deghosting delay
+	PORTA = 0xFF;
+	nop2();
+
+	if(dig4 != dec2seg(0)){
+	   PORTB = 0x40 | (PINB & 0x80);// Enables the fourth digit
+	   PORTA = dig4 ^ 0xFF;		// writes the fourth digit
+	   _delay_us(5);		// Deghosting delay
+	   PORTA = 0xFF;
+	   nop2();
+	}
+
+	PORTA = 0xFF;
+}
+
+/* Input:
+ * Output: current encoder state
+ * Purpose: Reads the encoders
+ */
+uint8_t readSPI(){
+   //Save encoder states into shift reg
+   PORTB = 0x00;
+   PORTB = 0x01;
+
+   PORTE = 0x00; //Enable encoder serial read
+   SPDR = 0x00; //Initiates SPI transfer
+   while(bit_is_clear(SPSR, SPIF)); //waits till done (8 cycles)
+   PORTE = 0x40; //Disable encoder serial read
+
+   return SPDR; //returns the data read from spi
+}
+
+ /* Output:
+ * Purpose: Reads, debounces, and adds encoder ticks to val7Seg
+ */
+void readEncoders(){
+   uint8_t currentEncoderState = readSPI(); //Gets current state of encoders
+
+   //Shifts in encoder1 val to encoder1State
+   if(~(encoder1State == 0xFF) || ~(currentEncoderState & 0x08))
+      encoder1State = (encoder1State<<1) | ((currentEncoderState & 0x08) ? 1 : 0);
+
+   //Shifts in encoder2 val to encoder2State
+   if(~(encoder2State == 0xFF) || ~(currentEncoderState & 0x02))
+      encoder2State = (encoder2State<<1) | ((currentEncoderState & 0x02) ? 1 : 0);
+
+   //Checks to see if mode is valid
+   //if(validMode() == 0) return; 
+
+   //If encoder1 is debounced (debounces 6 times)
+   //and has a falling edge then either add or subtract mode
+   //from val7Seg depending on direction of encoder
+   if((encoder1State & 0x05) == 0x04){ //0x3E
+      //if(currentEncoderState & 0x04) val7Seg += mode;
+      //else val7Seg -= mode;
+      radioMode |= (currentEncoderState & 0x04) ? 0x10 : 0x20;
+   }
+   //If encoder2 is debounced (debounces 6 times)
+   //and has a falling edge then either add or subtract mode
+   //from val7Seg depending on direction of encoder
+   if((encoder2State & 0x3F) == 0x3E){//80
+      //if(currentEncoderState & 0x01) val7Seg += mode;
+      //else val7Seg -= mode;
+      radioMode |= (currentEncoderState & 0x01) ? 0x01 : 0x02;
+   }
+}
+
+
+int main(int argc, char **argv){
+   //sets ports to output (dont need all of e or c)
+   DDRA = 0xFF;
+   DDRB = 0xFF; 
+   DDRE = 0xFF;
+   DDRC = 0xFF;
+
+   uint8_t twiOut[2], twiIn[2], uartIn[2];
+   twiOut[0] = 0x00;
+   twiOut[1] = 0x00;
+   
+
+   spiInit();	//Initialize SPI
+   lcd_init();  //Initialize lcd
+   timerInit(); //Initialize timers
+   init_twi();
+   uart_init();
+
+   twi_start_wr(sensor, twiOut, 2);
+
+   //alarmSet();  //enable alarm (used to rise lcd write flag)
+   //alarmSet();  //disable alarm
+   sei();
+   radioInit();
+   _delay_ms(500);
+   fm_tune_freq();
+   radioCheckUp();
+
+   while(1){
+      sprintf(radioSignal, "%d", signalStr()); // sets the signal strangth
+      
+      if(lcdMode&tempCheck){
+	 lcdMode &= ~tempCheck;
+	 UDR0 = 0x00; //poke 48 board
+	 while(!(UCSR0A & (1<<RXC0)));
+	 uartIn[0] = UDR0; //reads first byte from 48
+	 while(!(UCSR0A & (1<<RXC0)));
+	 uartIn[1] = UDR0; // reading last byte from 48 board
+	 sprintf((char*)lcdTemp[1], "%d.%d", uartIn[0], uartIn[1]); //creating the temperature string
+      }
+      
+      //reading local temp
+      twi_start_rd(sensor, twiIn, 2);
+      sprintf((char*)lcdTemp[0], " %d.%d", (twiIn[0]<<1) | ((twiIn[1]&0x80)?1:0), ((twiIn[1]&0x40)?5:0) + ((twiIn[1]&0x20)?2:0));
+
+
+      if(radioMode) radioCheckUp();
+      if(radioAlarm) radioOn();
+
+      mode &= 0xF0; //clears the clock set push button states
+      (mode & alarm) ? write7Seg(alarmHours, alarmMinutes, alarmSeconds) : write7Seg(timeHours, timeMinutes, timeSeconds);	//Write val7Seg to 7 segment
+      mode ^= readButton(); //get changes to mode
+
+      switch(mode & 0xF0){
+      	  case alarm: //change alarm mode // also sleep button
+	       	     changeTime(mode, CLOCK_ALARM);
+		     break;
+	  case alarmArm: //alarm arm/disarm mode
+		     alarmSet();
+		     mode &= ~alarmArm;
+		     break;
+	  case setClock: //set time mode
+      		  changeTime(mode, CLOCK_TIME);
+      		  break;
+	  case normal: // normal mode (nothing on)
+		  if((alarmMode & alarmOn) && (alarmMode & alarmSounding)){
+		     if(mode & 0x01){
+			alarmSeconds = timeSeconds + 10;
+		     }
+		     PORTB |= 0x01;
+		  }
+
+		  break;
+      };
+   }
+}
